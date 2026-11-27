@@ -1,3 +1,4 @@
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -15,6 +16,10 @@
 
 pid_t pid_mostrador, pid_deposito;
 
+//creamos semaforos para sincronizar los hilos
+sem_t  sem_extraccion, sem_registro;
+
+
 int tiempo_aleatorio(int min, int max) {
     return rand() % (max - min + 1) + min;
 }
@@ -26,20 +31,28 @@ void* busqueda(void* arg) {
     sleep(tiempo_aleatorio(1, 3));
     printf("[Hilo Búsqueda] Ejemplar %s localizado. Enviando a extracción...\n", (char *)arg);
 
+    // Señal para que el hilo de extracción comience
+    sem_post(&sem_extraccion); 
 
 }
 
 void* extraccion(void* arg) {
+    // Espera a que el hilo de búsqueda termine
+    sem_wait(&sem_extraccion); 
     printf("[Hilo Extracción] Comienzo mi ejecución...\n");
 
     printf("[Hilo Extracción] Extrayendo ejemplar %s de la estantería...\n", (char *)arg);
     sleep(tiempo_aleatorio(2, 4));
     printf("[Hilo Extracción] Ejemplar %s extraído. Enviando a registro...\n", (char *)arg);
+    // Señal para que el hilo de registro comience
 
-
+    sem_post(&sem_registro);
 }
 
 void* registro(void* arg) {
+    // Espera a que el hilo de extracción termine
+    sem_wait(&sem_registro);
+
     printf("[Hilo Registro] Comienzo mi ejecución...\n");
 
     printf("[Hilo Registro] Registrando préstamo del ejemplar %s...\n", (char *)arg);
@@ -49,6 +62,9 @@ void* registro(void* arg) {
 }
 
 int main(int argc, char* argv[]) {
+
+
+
     // Creacion de la cola para que se comunique mostrador con deposito
     struct mq_attr attr;
     attr.mq_flags = 0;
@@ -79,37 +95,41 @@ int main(int argc, char* argv[]) {
             
             while(1) {
             //Recibir mensaje desde la cola
-            int buff;
-            ssize_t mensajeRecibido = mq_receive(cola_mostrador_deposito,&buff, sizeof(buff), NULL);
+                int buff;
+                ssize_t mensajeRecibido = mq_receive(cola_mostrador_deposito,&buff, sizeof(buff), NULL);
+                
+                //inicializamos semaforos para sincronizar los hilos
+                sem_init(&sem_extraccion, 0, 0);
+                sem_init(&sem_registro, 0, 0);
+
+                //Creacion de los 3 hilos
+                //Variables que almacenaran los ID de los hilos
+                pthread_t tid_busqueda;
+                pthread_t tid_extraccion;
+                pthread_t tid_registro;
+
+                //Variables que almacenaran los atributos de los hilos
+                pthread_attr_t attr_busqueda;
+                pthread_attr_t attr_extraccion;
+                pthread_attr_t attr_registro;
+
+                //Inicializamos los atributos de default de los hilos
+                pthread_attr_init(&attr_busqueda);
+                pthread_attr_init(&attr_extraccion);
+                pthread_attr_init(&attr_registro);
+
+                //Inicializamos los hilos
+                pthread_create(&tid_busqueda, &attr_busqueda, busqueda, argv[1]);
+                pthread_create(&tid_extraccion, &attr_extraccion, extraccion, argv[1]);
+                pthread_create(&tid_registro, &attr_registro, registro, argv[1]);
+
+                //Esperar a que terminen los hilos, DUDA ¿Hay que esperar en paralelo?
+
+                pthread_join(tid_busqueda, NULL);
+                pthread_join(tid_extraccion, NULL);
+                pthread_join(tid_registro, NULL);
             
-            //Creacion de los 3 hilos
-            //Variables que almacenaran los ID de los hilos
-            pthread_t tid_busqueda;
-            pthread_t tid_extraccion;
-            pthread_t tid_registro;
-
-            //Variables que almacenaran los atributos de los hilos
-            pthread_attr_t attr_busqueda;
-            pthread_attr_t attr_extraccion;
-            pthread_attr_t attr_registro;
-
-            //Inicializamos los atributos de default de los hilos
-            pthread_attr_init(&attr_busqueda);
-            pthread_attr_init(&attr_extraccion);
-            pthread_attr_init(&attr_registro);
-
-            //Inicializamos los hilos
-            pthread_create(&tid_busqueda, &attr_busqueda, busqueda, argv[1]);
-            pthread_create(&tid_extraccion, &attr_extraccion, extraccion, argv[1]);
-            pthread_create(&tid_registro, &attr_registro, registro, argv[1]);
-
-            //Esperar a que terminen los hilos, DUDA ¿Hay que esperar en paralelo?
-
-            pthread_join(tid_busqueda, NULL);
-            pthread_join(tid_extraccion, NULL);
-            pthread_join(tid_registro, NULL);
-        
-        
+            
             }
 
             //Cerramos la cola cuando termine el proceso
