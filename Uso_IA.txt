@@ -1,0 +1,252 @@
+En este texto realizamos un seguimiento del uso que le hemos dado a la IA para la realización del proyecto:
+
+1. Consulta sobre que parametros debiamos usar para inicializar la cola posix, es decir, los atributos
+    
+2. Validación de que hemos implementado correctamente la cola de mensajes, tanto creacion, envio como recepcion
+    {{  Perfecto, vamos a centrarnos exclusivamente en la cola de mensajes POSIX (mqueue.h) y, de momento, dejamos de lado los hilos, semáforos y memoria compartida.
+
+        He revisado tu código y la idea general es correcta: crear una cola antes de hacer los fork() para que ambos procesos puedan utilizarla.
+
+        Hay algunos detalles que debes corregir para que funcione correctamente.
+        1. Creación de la cola
+        Tu código:
+        struct mq_attr attr;
+        attr.mq_flags = 0;
+        attr.mq_maxmsg = 10;
+        attr.mq_msgsize = sizeof(int);
+        attr.mq_curmsgs = 0;
+
+        mqd_t cola_mostrador_deposito =
+            mq_open(COLA, O_RDWR | O_CREAT, 0666, &attr);
+
+
+        Está bien planteado.
+
+        Vamos a entender cada elemento:
+        Elemento	Significado
+        mq_flags = 0	Cola en modo bloqueante.
+        mq_maxmsg = 10	Máximo de 10 mensajes pendientes.
+        mq_msgsize = sizeof(int)	Cada mensaje puede contener un entero.
+        mq_curmsgs = 0	Inicialmente no hay mensajes.
+        O_RDWR	Permite leer y escribir.
+        O_CREAT	Crea la cola si no existe.
+
+        Una observación: como estás utilizando sizeof(int), has decidido que cada solicitud estará representada por un número entero. Para empezar, es una buena decisión.
+
+        Más adelante podríamos ampliar el mensaje para incluir más información sobre el préstamo.
+        2. El envío del mensaje
+        Tu código:
+        if (mq_send(cola_mostrador_deposito,
+                    (const char *)&num_solicitud,
+                    sizeof(num_solicitud)+1, 0) == -1) {
+            perror("mq_send");
+        }
+
+
+        Aquí tienes un error importante.
+
+        Estás enviando:
+        sizeof(num_solicitud)+1
+
+
+        Pero has definido que el tamaño máximo del mensaje es:
+        sizeof(int)
+
+
+        Por tanto, ambos tamaños deben coincidir.
+
+        La pregunta es: ¿por qué estás sumando 1?
+
+        Si estás enviando un entero, no necesitas ese byte adicional. La cadena terminadora \0 se utiliza con cadenas de caracteres, no con enteros.
+
+        Deberías cambiar ese argumento por:
+        sizeof(num_solicitud)
+
+
+        El resto de la llamada está bien planteado.
+        3. La recepción del mensaje
+        Tu código:
+        int buff;
+        ssize_t mensajeRecibido = mq_receive(COLA, &buff, sizeof(buff), NULL);
+
+
+        Aquí tienes otro error importante.
+
+        La función mq_receive() recibe como primer parámetro un descriptor de cola (mqd_t), no el nombre de la cola (COLA).
+
+        Tú ya has creado ese descriptor:
+        mqd_t cola_mostrador_deposito = mq_open(...);
+
+
+        Por tanto, debes utilizarlo también para recibir.
+
+        La estructura sería:
+        int buff;
+
+        ssize_t mensajeRecibido = mq_receive(
+            cola_mostrador_deposito,
+            (char *)&buff,
+            sizeof(buff),
+            NULL
+        );
+
+
+        Hay otra cuestión importante: la recepción debería estar dentro del while(1).
+
+        ¿Por qué? Porque cada vez que el mostrador envía una solicitud, el depósito tiene que recibirla. Si dejas mq_receive() fuera del bucle, solamente recibirás una solicitud.
+        4. ¿Qué ocurre cuando la cola está llena?
+        Aquí viene una de las partes interesantes del ejercicio.
+
+        Has configurado:
+        attr.mq_flags = 0;
+
+
+        Esto significa que la cola funciona en modo bloqueante.
+
+        Por tanto:
+        - Si hay espacio, mq_send() introduce el mensaje inmediatamente.
+        - Si hay 10 mensajes pendientes, mq_send() se queda esperando.
+        - Cuando el depósito recibe un mensaje, libera un hueco.
+        - El mostrador puede continuar enviando solicitudes.
+        ¡Esto cumple exactamente lo que pide el enunciado!
+        5. Hay algo que te falta: cerrar y eliminar la cola
+        Debes distinguir dos operaciones:
+        Función	Qué hace
+        mq_close()	Cierra el descriptor de cola de un proceso.
+        mq_unlink()	Elimina el nombre de la cola del sistema.
+
+        Como creas la cola antes de los fork(), ambos procesos heredan el descriptor.
+
+        Cuando terminéis la ejecución, cada proceso deberá cerrar su descriptor y el padre deberá eliminar la cola cuando los hijos hayan terminado.
+        6. Resumen de los cambios
+        Estos son los aspectos que debes revisar:
+        Creación de la cola
+        Correcto
+
+
+        Tamaño de mq_send()
+        Corregir
+
+        Eliminar el +1 del tamaño.
+
+        Primer parámetro de mq_receive()
+        Corregir
+
+        Utilizar el descriptor, no el nombre de la cola.
+
+        Ubicación de mq_receive()
+        Corregir
+
+        Introducirlo dentro del bucle del depósito.
+
+        Liberación de recursos
+        Pendiente
+
+        Cerrar los descriptores y eliminar la cola.
+
+        7. Una pregunta para comprobar que lo has entendido
+        Imagina que el mostrador envía estas solicitudes:
+        Solicitud 0
+        Solicitud 1
+        Solicitud 2
+        Solicitud 3
+
+
+        Y el depósito todavía no ha empezado a procesarlas.
+
+        ¿En qué orden recibirá los mensajes el depósito?
+
+        A) 3, 2, 1, 0.
+
+        B) 0, 1, 2, 3.
+
+        C) En un orden aleatorio.
+
+        Piénsalo, porque es importante entender cómo funciona internamente una cola POSIX antes de continuar con la implementación.
+    }}
+3. Explicacion de diferencia entre el nombre de la cola y el descriptor que permite acceder a ella.
+
+    {{
+        La diferencia es que representan dos cosas distintas: **el nombre de la cola y el descriptor que permite acceder a ella**.
+
+        En tu código tienes:
+
+        ```
+        #define COLA "/mensajes"
+        ```
+
+        Y también:
+
+        ```
+        mqd_t cola_mostrador_deposito =
+            mq_open(COLA, O_RDWR | O_CREAT, 0666, &attr);
+        ```
+
+        ### **1.&#x20;**`COLA`**: el nombre de la cola**
+
+        `COLA` es una constante que contiene el nombre con el que identificas la cola en el sistema operativo.
+
+        En este caso:
+
+        ```
+        #define COLA "/mensajes"
+        ```
+
+        Es como el nombre de un archivo: permite localizar el recurso.
+
+        Por ejemplo, lo utilizas para abrir o eliminar la cola:
+
+        ```
+        mq_open(COLA, ...);
+
+        mq_unlink(COLA);
+        ```
+
+        ### **2.&#x20;**`cola_mostrador_deposito`**: el descriptor**
+
+        Esta variable es de tipo `mqd_t`:
+
+        ```
+        mqd_t cola_mostrador_deposito;
+        ```
+
+        Al ejecutar `mq_open()`, el sistema operativo devuelve un descriptor que guardas en esa variable.
+
+        Es decir, representa el acceso que tiene tu proceso a la cola.
+
+        Lo utilizas para enviar, recibir y cerrar mensajes:
+
+        ```
+        mq_send(cola_mostrador_deposito, ...);
+
+        mq_receive(cola_mostrador_deposito, ...);
+
+        mq_close(cola_mostrador_deposito);
+        ```
+
+        ### **3. Diferencia visual**
+
+        **COLA**
+
+        `"/mensajes"`
+
+        Nombre que identifica la cola en el sistema
+
+        **mq_open()**
+
+        Abre la cola y devuelve un descriptor
+
+        **cola_mostrador_deposito**
+
+        `mqd_t`
+
+        Descriptor utilizado para operar con la cola
+
+        **Quédate con esta analogía:**
+
+        - `COLA` es la dirección de una casa.
+        - `cola_mostrador_deposito` es la llave que te permite acceder a ella.
+
+        Y una última cuestión importante para tu práctica: al hacer `fork()`, los dos procesos hijos heredan el descriptor de la cola que abrió el padre. Por eso ambos pueden utilizar `cola_mostrador_deposito` sin tener que volver a ejecutar `mq_open()`.
+
+    }}
